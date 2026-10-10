@@ -11,7 +11,7 @@ func argument(_ name: String) -> String? {
 
 if let sourcePath = argument("--scan") ?? argument("--import") ?? argument("--configure"), let destinationPath = argument("--destination") {
     do {
-        let request = ImportRequest(source: URL(fileURLWithPath: sourcePath), destination: URL(fileURLWithPath: destinationPath), includeProxies: CommandLine.arguments.contains("--include-proxies"))
+        let request = ImportRequest(source: URL(fileURLWithPath: sourcePath), destination: URL(fileURLWithPath: destinationPath), includeProxies: CommandLine.arguments.contains("--include-proxies"), verification: CommandLine.arguments.contains("--full-verify") ? .full : .quick)
         let plan = try ImportEngine().scan(request)
         if CommandLine.arguments.contains("--configure") {
             guard let camera = CameraCatalog.connected().first(where: { $0.url.path == request.source.standardizedFileURL.path }) else { throw ImportFailure.invalidSource }
@@ -35,7 +35,7 @@ if let sourcePath = argument("--scan") ?? argument("--import") ?? argument("--co
         exit(1)
     }
 } else if CommandLine.arguments.count > 1 {
-    print("Usage: ActionImport --scan|--import|--configure SOURCE --destination DESTINATION [--include-proxies] [--enable-auto]")
+    print("Usage: ActionImport --scan|--import|--configure SOURCE --destination DESTINATION [--include-proxies] [--full-verify] [--enable-auto]")
     exit(2)
 } else {
     let application = NSApplication.shared

@@ -3,14 +3,20 @@ import CryptoKit
 import Darwin
 
 public struct ImportRequest: Sendable {
+    /// `quick` trusts an archive whose recorded source and file metadata are unchanged;
+    /// `full` rereads every source and archive to compare SHA-256.
+    public enum Verification: Sendable { case quick, full }
+
     public let source: URL
     public let destination: URL
     public let includeProxies: Bool
+    public let verification: Verification
 
-    public init(source: URL, destination: URL, includeProxies: Bool = false) {
+    public init(source: URL, destination: URL, includeProxies: Bool = false, verification: Verification = .quick) {
         self.source = source
         self.destination = destination
         self.includeProxies = includeProxies
+        self.verification = verification
     }
 }
 
@@ -131,6 +137,11 @@ public struct ImportEngine: Sendable {
             let emit: (ImportProgress.Phase, Int64) -> Void = { phase, bytes in
                 progress(ImportProgress(phase: phase, fileName: file.url.lastPathComponent, finishedFiles: imported + skipped, totalFiles: plan.files.count, processedBytes: bytes, fileBytes: file.size))
             }
+            if request.verification == .quick, quickMatch(file, destination: destination, manifest: manifest) {
+                skipped += 1
+                progress(ImportProgress(phase: .completed, fileName: file.url.lastPathComponent, finishedFiles: imported + skipped, totalFiles: plan.files.count, processedBytes: 0, fileBytes: file.size))
+                continue
+            }
             if try exists(target) || manifest.files.values.contains(where: { $0.source == file.relativePath && $0.size == file.size }) {
                 let checksum = try hash(file.url, cancelled: cancelled) { emit(.checking, $0) }
                 try validateSource(file)
@@ -150,6 +161,8 @@ public struct ImportEngine: Sendable {
             defer { try? sourceHandle.close() }
             let descriptor = temporary.path.withCString { Darwin.open($0, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600) }
             guard descriptor >= 0 else { throw posixError() }
+            // Keep written pages out of the cache so the readback below comes from storage.
+            _ = fcntl(descriptor, F_NOCACHE, 1)
             let targetHandle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
             var digest = SHA256()
             var written: Int64 = 0
@@ -167,7 +180,8 @@ public struct ImportEngine: Sendable {
                     }
                     if !hasChunk { break }
                 }
-                try targetHandle.synchronize()
+                // F_FULLFSYNC also flushes the drive cache; filesystems without it fall back to fsync.
+                if fcntl(descriptor, F_FULLFSYNC) != 0 { try targetHandle.synchronize() }
                 try targetHandle.close()
             } catch {
                 try? targetHandle.close()
@@ -210,6 +224,17 @@ public struct ImportEngine: Sendable {
         let size: Int64
         let sha256: String
         let verifiedAt: Date
+        // Absent in manifests written before quick checks; such records take one full check.
+        let sourceModified: Date?
+        let archive: FileStamp?
+    }
+
+    /// Identity of an archived file when it was verified. Any rewrite or replacement changes it.
+    private struct FileStamp: Codable, Equatable {
+        let device: Int64
+        let inode: UInt64
+        let size: Int64
+        let modifiedNanoseconds: Int64
     }
 
     private func loadManifest(_ destination: URL) throws -> Manifest {
@@ -221,10 +246,27 @@ public struct ImportEngine: Sendable {
 
     private func record(_ file: MediaFile, target: URL, checksum: String, destination: URL, manifest: inout Manifest) throws {
         let relative = String(target.path.dropFirst(destination.path.count + 1))
-        manifest.files[relative] = Record(source: file.relativePath, size: file.size, sha256: checksum, verifiedAt: Date())
+        manifest.files[relative] = Record(source: file.relativePath, size: file.size, sha256: checksum, verifiedAt: Date(), sourceModified: file.modified, archive: stamp(target))
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(manifest).write(to: destination.appendingPathComponent(".actionimport-manifest.json"), options: .atomic)
+    }
+
+    private func quickMatch(_ file: MediaFile, destination: URL, manifest: Manifest) -> Bool {
+        manifest.files.contains { relative, record in
+            guard record.source == file.relativePath, record.size == file.size, record.sourceModified == file.modified,
+                  let recorded = record.archive, recorded.size == file.size,
+                  !relative.hasPrefix("/"), !relative.split(separator: "/").contains("..") else { return false }
+            let archived = destination.appendingPathComponent(relative)
+            return contains(destination, archived.resolvingSymlinksInPath()) && stamp(archived) == recorded
+        }
+    }
+
+    private func stamp(_ url: URL) -> FileStamp? {
+        var info = stat()
+        guard url.path.withCString({ lstat($0, &info) }) == 0, info.st_mode & S_IFMT == S_IFREG else { return nil }
+        let modified = Int64(info.st_mtimespec.tv_sec) * 1_000_000_000 + Int64(info.st_mtimespec.tv_nsec)
+        return FileStamp(device: Int64(info.st_dev), inode: UInt64(info.st_ino), size: Int64(info.st_size), modifiedNanoseconds: modified)
     }
 
     private func existingChecksum(_ target: URL, size: Int64, cancelled: () -> Bool) throws -> String? {
@@ -294,6 +336,7 @@ public struct ImportEngine: Sendable {
 
     private func hash(_ url: URL, cancelled: () -> Bool, progress: (Int64) -> Void) throws -> String {
         let handle = try openRead(url)
+        _ = fcntl(handle.fileDescriptor, F_NOCACHE, 1)
         defer { try? handle.close() }
         var digest = SHA256()
         var bytes: Int64 = 0

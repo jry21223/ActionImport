@@ -16,6 +16,10 @@ struct ImportEngineChecks {
             ("insufficient space fails before publishing a video", testInsufficientSpace),
             ("concurrent importer cannot share destination", testConcurrentImporter),
             ("collision archive reused when original name becomes free", testCollisionArchiveAfterOriginalDeleted),
+            ("quick check skips unchanged footage without reading it", testQuickSkipDoesNotRead),
+            ("quick check rejects changed source", testQuickSkipRejectsChangedSource),
+            ("legacy manifest takes full check once then quick", testLegacyManifestUpgrades),
+            ("full verification rereads footage", testFullVerificationRereads),
             ("capture date folder derived from DJI name and fallback", testCaptureDateFolder),
             ("panel presentation follows import state", testPanelPresentation),
         ]
@@ -174,6 +178,71 @@ struct ImportEngineChecks {
         try expect(repeated.imported, 0, "existing conflict archive must be reused")
         try expect(repeated.skipped, 1, "existing conflict archive verified")
         try expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).count, 1, "no duplicate original name published")
+    }
+
+    static func testQuickSkipDoesNotRead() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let video = try fixture.add("DJI_20261003165918_0129_D.MP4", content: "original footage")
+        _ = try ImportEngine().run(fixture.request)
+        let archived = fixture.destination.appendingPathComponent("2026-10-03/DJI_20261003165918_0129_D.MP4")
+        // Unreadable files prove the quick path decides from metadata alone.
+        try withUnreadable([video, archived]) {
+            let result = try ImportEngine().run(fixture.request)
+            try expect(result.imported, 0, "nothing copied")
+            try expect(result.skipped, 1, "unchanged file skipped")
+        }
+    }
+
+    static func testQuickSkipRejectsChangedSource() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let video = try fixture.add("DJI_20261003165918_0129_D.MP4", content: "original footage")
+        _ = try ImportEngine().run(fixture.request)
+        try Data("replaced footage".utf8).write(to: video)
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(60)], ofItemAtPath: video.path)
+        let result = try ImportEngine().run(fixture.request)
+        try expect(result.imported, 1, "changed source archived again")
+        try expect(try String(contentsOf: fixture.destination.appendingPathComponent("2026-10-03/DJI_20261003165918_0129_D.MP4"), encoding: .utf8), "original footage", "earlier archive kept")
+    }
+
+    static func testLegacyManifestUpgrades() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let video = try fixture.add("DJI_20261003165918_0129_D.MP4", content: "original footage")
+        _ = try ImportEngine().run(fixture.request)
+        let manifestURL = fixture.destination.appendingPathComponent(".actionimport-manifest.json")
+        var manifest = try JSONSerialization.jsonObject(with: Data(contentsOf: manifestURL)) as! [String: Any]
+        var files = manifest["files"] as! [String: [String: Any]]
+        for key in files.keys { files[key] = files[key]!.filter { ["source", "size", "sha256", "verifiedAt"].contains($0.key) } }
+        manifest["files"] = files
+        try JSONSerialization.data(withJSONObject: manifest).write(to: manifestURL)
+        let archived = fixture.destination.appendingPathComponent("2026-10-03/DJI_20261003165918_0129_D.MP4")
+        try expect(try throwsAny { try withUnreadable([video]) { _ = try ImportEngine().run(fixture.request) } }, true, "legacy record needs a full check")
+        try expect(try ImportEngine().run(fixture.request).skipped, 1, "full check upgrades record")
+        try withUnreadable([video, archived]) {
+            try expect(try ImportEngine().run(fixture.request).skipped, 1, "upgraded record takes quick path")
+        }
+    }
+
+    static func testFullVerificationRereads() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let video = try fixture.add("DJI_20261003165918_0129_D.MP4", content: "original footage")
+        _ = try ImportEngine().run(fixture.request)
+        let full = ImportRequest(source: fixture.source, destination: fixture.destination, verification: .full)
+        try expect(try throwsAny { try withUnreadable([video]) { _ = try ImportEngine().run(full) } }, true, "full mode reads source")
+        try expect(try ImportEngine().run(full).skipped, 1, "full mode verifies existing archive")
+    }
+
+    private static func withUnreadable(_ urls: [URL], _ body: () throws -> Void) throws {
+        for url in urls { try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: url.path) }
+        defer { for url in urls { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path) } }
+        try body()
+    }
+
+    private static func throwsAny(_ body: () throws -> Void) throws -> Bool {
+        do { try body(); return false } catch { return true }
     }
 
     static func testCaptureDateFolder() throws {

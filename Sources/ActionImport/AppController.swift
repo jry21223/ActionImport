@@ -107,7 +107,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         statusItem.button?.target = self
         statusItem.button?.action = #selector(togglePanel)
         statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
-        for (title, action) in [("ActionImport", #selector(showPanel)), ("立即导入 / 重试", #selector(retryImport)), ("打开保存目录", #selector(openDestination))] {
+        for (title, action) in [("ActionImport", #selector(showPanel)), ("立即导入 / 重试", #selector(retryImport)), ("完整核对已导入素材", #selector(fullVerifyImport)), ("打开保存目录", #selector(openDestination))] {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
             item.target = self
             contextMenu.addItem(item)
@@ -211,6 +211,12 @@ final class AppController: NSObject, NSApplicationDelegate {
         scanAndMaybeStart(automatically: false, startWhenReady: true)
     }
 
+    /// Rereads every source and archive instead of trusting unchanged metadata.
+    @objc private func fullVerifyImport() {
+        guard worker == nil, !scanning else { return }
+        scanAndMaybeStart(automatically: false, startWhenReady: true, verification: .full)
+    }
+
     @objc private func refreshCamera() {
         Task { @MainActor in
             await refreshCameras()
@@ -274,12 +280,12 @@ final class AppController: NSObject, NSApplicationDelegate {
         refreshControls()
     }
 
-    private func request() -> ImportRequest? {
+    private func request(verification: ImportRequest.Verification = .quick) -> ImportRequest? {
         guard let camera = configuredCamera, let path = settings.destinationPath else { return nil }
-        return ImportRequest(source: camera.url, destination: URL(fileURLWithPath: path), includeProxies: settings.includeProxies)
+        return ImportRequest(source: camera.url, destination: URL(fileURLWithPath: path), includeProxies: settings.includeProxies, verification: verification)
     }
 
-    private func scanAndMaybeStart(automatically: Bool, startWhenReady: Bool = false) {
+    private func scanAndMaybeStart(automatically: Bool, startWhenReady: Bool = false, verification: ImportRequest.Verification = .quick) {
         guard worker == nil, !scanning else { return }
         guard let request = request() else {
             summaryLabel.stringValue = settings.volumeIdentifier == nil ? "选择相机和保存目录后可查看素材" : "等待 \(settings.volumeName ?? "相机") 接入"
@@ -309,7 +315,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                 writeStatus(.ready, total: plan.files.count, message: stateLabel.stringValue)
                 scanning = false
                 refreshControls()
-                if !plan.files.isEmpty && (startWhenReady || (automatically && settings.autoImport)) { startImport() }
+                if !plan.files.isEmpty && (startWhenReady || (automatically && settings.autoImport)) { startImport(verification: verification) }
             } catch {
                 scanning = false
                 stateLabel.stringValue = "扫描失败：\(error.localizedDescription)"
@@ -320,8 +326,8 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc private func startImport() {
-        guard worker == nil, !scanning, scannedFiles > 0, let request = request() else { return }
+    private func startImport(verification: ImportRequest.Verification = .quick) {
+        guard worker == nil, !scanning, scannedFiles > 0, let request = request(verification: verification) else { return }
         progressBar.doubleValue = 0
         stateLabel.stringValue = "开始导入…"
         let throttle = ProgressThrottle()
