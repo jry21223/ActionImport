@@ -1,0 +1,22 @@
+# Build and local files
+.build/
+dist/
+.DS_Store
+work/
+.env
+.env.*
+!.env.example
+
+# Camera media and import state
+*.mp4
+*.MP4
+*.lrf
+*.LRF
+*.scr
+*.SCR
+*.thm
+*.THM
+*.partial
+.actionimport-manifest.json
+.actionimport.lock
+settings.local.json
