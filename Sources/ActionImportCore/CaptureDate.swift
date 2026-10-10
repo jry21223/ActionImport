@@ -29,8 +29,7 @@ public enum CaptureDate {
         return String(stamp)
     }
 
-    /// Date formatters are not thread-safe on their own; the lock makes the shared
-    /// cache safe to read from the scan and diagnostic call sites alike.
+    /// The lock guards the dictionary; DateFormatter itself is thread-safe on macOS 10.9 and later.
     final class FormatterCache: @unchecked Sendable {
         static let shared = FormatterCache()
         private let lock = NSLock()

@@ -18,6 +18,7 @@ struct ImportEngineChecks {
             ("collision archive reused when original name becomes free", testCollisionArchiveAfterOriginalDeleted),
             ("quick check skips unchanged footage without reading it", testQuickSkipDoesNotRead),
             ("quick check rejects changed source", testQuickSkipRejectsChangedSource),
+            ("quick check rejects rewritten archive", testQuickSkipRejectsRewrittenArchive),
             ("legacy manifest takes full check once then quick", testLegacyManifestUpgrades),
             ("full verification rereads footage", testFullVerificationRereads),
             ("capture date folder derived from DJI name and fallback", testCaptureDateFolder),
@@ -204,6 +205,22 @@ struct ImportEngineChecks {
         let result = try ImportEngine().run(fixture.request)
         try expect(result.imported, 1, "changed source archived again")
         try expect(try String(contentsOf: fixture.destination.appendingPathComponent("2026-10-03/DJI_20261003165918_0129_D.MP4"), encoding: .utf8), "original footage", "earlier archive kept")
+    }
+
+    static func testQuickSkipRejectsRewrittenArchive() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        _ = try fixture.add("DJI_20261003165918_0129_D.MP4", content: "original footage")
+        _ = try ImportEngine().run(fixture.request)
+        let archived = fixture.destination.appendingPathComponent("2026-10-03/DJI_20261003165918_0129_D.MP4")
+        let modified = try FileManager.default.attributesOfItem(atPath: archived.path)[.modificationDate] as! Date
+        // Same size, replaced file, original timestamp restored: only the inode gives it away.
+        try FileManager.default.removeItem(at: archived)
+        try Data("damaged! footage".utf8).write(to: archived)
+        try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: archived.path)
+        let result = try ImportEngine().run(fixture.request)
+        try expect(result.imported, 1, "replaced archive not trusted")
+        try expect(try String(contentsOf: archived, encoding: .utf8), "damaged! footage", "replaced file not overwritten")
     }
 
     static func testLegacyManifestUpgrades() throws {

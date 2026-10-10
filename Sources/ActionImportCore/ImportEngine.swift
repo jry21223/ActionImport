@@ -123,6 +123,7 @@ public struct ImportEngine: Sendable {
         guard flock(lockDescriptor, LOCK_EX | LOCK_NB) == 0 else { throw ImportFailure.busy }
         defer { flock(lockDescriptor, LOCK_UN) }
         var manifest = try loadManifest(destination)
+        let recordsBySource = Dictionary(grouping: manifest.files, by: \.value.source)
         var imported = 0
         var skipped = 0
         for file in plan.files {
@@ -137,9 +138,9 @@ public struct ImportEngine: Sendable {
             let emit: (ImportProgress.Phase, Int64) -> Void = { phase, bytes in
                 progress(ImportProgress(phase: phase, fileName: file.url.lastPathComponent, finishedFiles: imported + skipped, totalFiles: plan.files.count, processedBytes: bytes, fileBytes: file.size))
             }
-            if request.verification == .quick, quickMatch(file, destination: destination, manifest: manifest) {
+            if request.verification == .quick, quickMatch(file, destination: destination, records: recordsBySource[file.relativePath] ?? []) {
                 skipped += 1
-                progress(ImportProgress(phase: .completed, fileName: file.url.lastPathComponent, finishedFiles: imported + skipped, totalFiles: plan.files.count, processedBytes: 0, fileBytes: file.size))
+                emit(.completed, 0)
                 continue
             }
             if try exists(target) || manifest.files.values.contains(where: { $0.source == file.relativePath && $0.size == file.size }) {
@@ -150,7 +151,7 @@ public struct ImportEngine: Sendable {
                 if choice.matches {
                     try record(file, target: target, checksum: checksum, destination: destination, manifest: &manifest)
                     skipped += 1
-                    progress(ImportProgress(phase: .completed, fileName: file.url.lastPathComponent, finishedFiles: imported + skipped, totalFiles: plan.files.count, processedBytes: 0, fileBytes: file.size))
+                    emit(.completed, 0)
                     continue
                 }
             }
@@ -161,7 +162,7 @@ public struct ImportEngine: Sendable {
             defer { try? sourceHandle.close() }
             let descriptor = temporary.path.withCString { Darwin.open($0, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600) }
             guard descriptor >= 0 else { throw posixError() }
-            // Keep written pages out of the cache so the readback below comes from storage.
+            // Best effort: keep written pages out of the cache so the readback below normally comes from storage.
             _ = fcntl(descriptor, F_NOCACHE, 1)
             let targetHandle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
             var digest = SHA256()
@@ -209,7 +210,7 @@ public struct ImportEngine: Sendable {
             }
             try record(file, target: target, checksum: expected, destination: destination, manifest: &manifest)
             if published { imported += 1 } else { skipped += 1 }
-            progress(ImportProgress(phase: .completed, fileName: file.url.lastPathComponent, finishedFiles: imported + skipped, totalFiles: plan.files.count, processedBytes: 0, fileBytes: file.size))
+            emit(.completed, 0)
         }
         return ImportResult(imported: imported, skipped: skipped)
     }
@@ -229,9 +230,9 @@ public struct ImportEngine: Sendable {
         let archive: FileStamp?
     }
 
-    /// Identity of an archived file when it was verified. Any rewrite or replacement changes it.
+    /// Identity of an archived file when it was verified; a rewrite or replacement changes it.
+    /// Device numbers are left out because they change when an external archive disk remounts.
     private struct FileStamp: Codable, Equatable {
-        let device: Int64
         let inode: UInt64
         let size: Int64
         let modifiedNanoseconds: Int64
@@ -252,9 +253,9 @@ public struct ImportEngine: Sendable {
         try encoder.encode(manifest).write(to: destination.appendingPathComponent(".actionimport-manifest.json"), options: .atomic)
     }
 
-    private func quickMatch(_ file: MediaFile, destination: URL, manifest: Manifest) -> Bool {
-        manifest.files.contains { relative, record in
-            guard record.source == file.relativePath, record.size == file.size, record.sourceModified == file.modified,
+    private func quickMatch(_ file: MediaFile, destination: URL, records: [(key: String, value: Record)]) -> Bool {
+        records.contains { relative, record in
+            guard record.size == file.size, record.sourceModified == file.modified,
                   let recorded = record.archive, recorded.size == file.size,
                   !relative.hasPrefix("/"), !relative.split(separator: "/").contains("..") else { return false }
             let archived = destination.appendingPathComponent(relative)
@@ -266,7 +267,7 @@ public struct ImportEngine: Sendable {
         var info = stat()
         guard url.path.withCString({ lstat($0, &info) }) == 0, info.st_mode & S_IFMT == S_IFREG else { return nil }
         let modified = Int64(info.st_mtimespec.tv_sec) * 1_000_000_000 + Int64(info.st_mtimespec.tv_nsec)
-        return FileStamp(device: Int64(info.st_dev), inode: UInt64(info.st_ino), size: Int64(info.st_size), modifiedNanoseconds: modified)
+        return FileStamp(inode: UInt64(info.st_ino), size: Int64(info.st_size), modifiedNanoseconds: modified)
     }
 
     private func existingChecksum(_ target: URL, size: Int64, cancelled: () -> Bool) throws -> String? {
