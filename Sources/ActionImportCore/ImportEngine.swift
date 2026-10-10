@@ -98,7 +98,7 @@ public struct ImportEngine: Sendable {
                   url.pathExtension.uppercased() == "MP4" || (request.includeProxies && url.pathExtension.uppercased() == "LRF") else { continue }
             guard contains(source, url.resolvingSymlinksInPath()) else { throw ImportFailure.invalidSource }
             let modified = values.contentModificationDate ?? Date(timeIntervalSince1970: 0)
-            files.append(MediaFile(url: url, relativePath: String(url.path.dropFirst(source.path.count + 1)), dateFolder: captureDate(url.lastPathComponent, fallback: modified), size: Int64(values.fileSize ?? 0), modified: modified))
+            files.append(MediaFile(url: url, relativePath: String(url.path.dropFirst(source.path.count + 1)), dateFolder: CaptureDate.folderName(forFileName: url.lastPathComponent, fallback: modified), size: Int64(values.fileSize ?? 0), modified: modified))
         }
         if let enumerationError { throw enumerationError }
         return ImportPlan(files: files.sorted { $0.relativePath < $1.relativePath })
@@ -279,23 +279,6 @@ public struct ImportEngine: Sendable {
 
     private func contains(_ parent: URL, _ child: URL) -> Bool {
         parent.path == child.path || child.path.hasPrefix(parent.path.hasSuffix("/") ? parent.path : parent.path + "/")
-    }
-
-    private func captureDate(_ name: String, fallback: Date) -> String {
-        let format = DateFormatter()
-        format.locale = Locale(identifier: "en_US_POSIX")
-        format.calendar = Calendar(identifier: .gregorian)
-        format.isLenient = false
-        let parts = name.split(separator: "_")
-        if parts.count > 1, parts[0] == "DJI", parts[1].count == 14, parts[1].allSatisfy({ $0.isASCII && $0.isNumber }) {
-            format.dateFormat = "yyyyMMddHHmmss"
-            if let date = format.date(from: String(parts[1])) {
-                format.dateFormat = "yyyy-MM-dd"
-                return format.string(from: date)
-            }
-        }
-        format.dateFormat = "yyyy-MM-dd"
-        return format.string(from: fallback)
     }
 
     private func openRead(_ url: URL) throws -> FileHandle {

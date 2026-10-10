@@ -16,6 +16,8 @@ struct ImportEngineChecks {
             ("insufficient space fails before publishing a video", testInsufficientSpace),
             ("concurrent importer cannot share destination", testConcurrentImporter),
             ("collision archive reused when original name becomes free", testCollisionArchiveAfterOriginalDeleted),
+            ("capture date folder derived from DJI name and fallback", testCaptureDateFolder),
+            ("panel presentation follows import state", testPanelPresentation),
         ]
         let filter = CommandLine.arguments.dropFirst().first
         var failures = 0
@@ -172,6 +174,74 @@ struct ImportEngineChecks {
         try expect(repeated.imported, 0, "existing conflict archive must be reused")
         try expect(repeated.skipped, 1, "existing conflict archive verified")
         try expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).count, 1, "no duplicate original name published")
+    }
+
+    static func testCaptureDateFolder() throws {
+        let fallback = Self.localDate(2025, 10, 19)
+        try expect(CaptureDate.folderName(forFileName: "DJI_20261003165918_0129_D.MP4", fallback: fallback), "2026-10-03", "timestamp taken from DJI name")
+        try expect(CaptureDate.folderName(forFileName: "DJI_20260101000000_0001_D.MP4", fallback: fallback), "2026-01-01", "midnight timestamp parsed")
+        // A non-DJI name or a malformed timestamp uses the file's own modification date.
+        try expect(
+            CaptureDate.folderName(forFileName: "clip.mp4", fallback: Self.localDate(2026, 5, 6)),
+            "2026-05-06",
+            "falls back to modification date"
+        )
+        try expect(
+            CaptureDate.folderName(forFileName: "DJI_notatimestamp_0129_D.MP4", fallback: Self.localDate(2026, 5, 6)),
+            "2026-05-06",
+            "malformed DJI timestamp falls back"
+        )
+        try expect(CaptureDate.djiTimestamp(in: "DJI_20261003165918_0129_D.MP4"), "20261003165918", "extracts raw stamp")
+        try expect(CaptureDate.djiTimestamp(in: "DJI_2026_0129_D.MP4"), nil, "short field rejected")
+        try expect(CaptureDate.djiTimestamp(in: "MP4_20261003165918_0129_D.MP4"), nil, "non-DJI prefix rejected")
+    }
+
+    static func testPanelPresentation() throws {
+        // Unconfigured wins over everything else.
+        let unconfigured = ImportPresentation(ImportPresentation.State(configured: false, busy: true))
+        try expect(unconfigured.primaryAction, .configure, "unconfigured asks for setup")
+        try expect(unconfigured.primaryEnabled, true, "setup stays clickable")
+        try expect(unconfigured.primaryTitle, "完成设置", "setup title")
+
+        // A running import offers stop, and its headline reflects work in progress.
+        let busy = ImportPresentation(ImportPresentation.State(phase: .copying, configured: true, busy: true, importActive: true))
+        try expect(busy.primaryAction, .stop, "busy offers stop")
+        try expect(busy.headline, "正在复制", "copying headline")
+
+        // A finished import reports what actually happened, not a generic success.
+        let imported = ImportPresentation(ImportPresentation.State(phase: .completed, configured: true, lastImported: 3))
+        try expect(imported.headline, "已收好", "imported headline")
+        let nothingNew = ImportPresentation(ImportPresentation.State(phase: .completed, configured: true, lastImported: 0))
+        try expect(nothingNew.headline, "没有新视频", "no-op headline")
+
+        // Retry needs a camera; the button is disabled while it is gone.
+        let retryOffline = ImportPresentation(ImportPresentation.State(phase: .failed, configured: true, cameraConnected: false))
+        try expect(retryOffline.primaryAction, .retry, "failure offers retry")
+        try expect(retryOffline.primaryEnabled, false, "retry disabled without camera")
+        let retryOnline = ImportPresentation(ImportPresentation.State(phase: .failed, configured: true, cameraConnected: true))
+        try expect(retryOnline.primaryEnabled, true, "retry enabled with camera")
+
+        // Scanned footage starts an import; an empty scan falls through to open.
+        let ready = ImportPresentation(ImportPresentation.State(phase: .ready, configured: true, cameraConnected: true, scannedFiles: 4))
+        try expect(ready.primaryAction, .start, "scanned footage starts import")
+        try expect(ready.headline, "准备导入", "ready headline")
+        let empty = ImportPresentation(ImportPresentation.State(phase: .ready, configured: true, cameraConnected: true, scannedFiles: 0))
+        try expect(empty.primaryAction, .open, "empty scan offers open")
+
+        // Every phase yields a headline, and progress labels stay distinct.
+        for phase in ImportPresentation.Phase.allCases {
+            let state = ImportPresentation.State(phase: phase, configured: true, cameraConnected: true)
+            try expect(ImportPresentation(state).headline.isEmpty, false, "headline for \(phase.rawValue)")
+        }
+        let labels = Set([ImportProgress.Phase.copying, .verifying, .checking, .completed].map(ImportPresentation.progressLabel))
+        try expect(labels.count, 4, "progress labels are distinct")
+    }
+
+    /// Local noon, because folder names are formatted in the Mac's own time zone.
+    private static func localDate(_ year: Int, _ month: Int, _ day: Int) -> Date {
+        var components = DateComponents()
+        components.year = year; components.month = month; components.day = day; components.hour = 12
+        return Calendar(identifier: .gregorian).date(from: components) ?? Date(timeIntervalSince1970: 0)
     }
 }
 

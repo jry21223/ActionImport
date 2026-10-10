@@ -20,9 +20,8 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var proxyButton: NSButton { panel.proxyButton }
     private var loginButton: NSButton { panel.loginButton }
     private var destinationButton: NSButton { panel.destinationButton }
-    private enum PrimaryAction { case configure, start, retry, stop, open }
-    private var primaryAction = PrimaryAction.configure
-    private var displayPhase = "waiting"
+    private var primaryAction = ImportPresentation.Action.configure
+    private var displayPhase = ImportPresentation.Phase.waiting
     private var lastImported = 0
     private var worker: Task<ImportResult, Error>?
     private var scanning = false
@@ -288,7 +287,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             statusItem.button?.title = ""
             progressBar.doubleValue = 0
             fileLabel.stringValue = ""
-            writeStatus("waiting", message: summaryLabel.stringValue)
+            writeStatus(.waiting, message: summaryLabel.stringValue)
             return
         }
         scanning = true
@@ -298,7 +297,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         fileLabel.stringValue = ""
         progressBar.doubleValue = 0
         statusItem.button?.title = " 扫描"
-        writeStatus("scanning")
+        writeStatus(.scanning)
         refreshControls()
         Task { @MainActor in
             do {
@@ -307,7 +306,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                 summaryLabel.stringValue = "检测到 \(plan.files.count) 个素材 · \(ByteCountFormatter.string(fromByteCount: plan.totalBytes, countStyle: .file))"
                 stateLabel.stringValue = plan.files.isEmpty ? "相机中没有可导入的素材" : "\(plan.files.count) 个文件 · \(ByteCountFormatter.string(fromByteCount: plan.totalBytes, countStyle: .file))"
                 statusItem.button?.title = ""
-                writeStatus("ready", total: plan.files.count, message: stateLabel.stringValue)
+                writeStatus(.ready, total: plan.files.count, message: stateLabel.stringValue)
                 scanning = false
                 refreshControls()
                 if !plan.files.isEmpty && (startWhenReady || (automatically && settings.autoImport)) { startImport() }
@@ -315,7 +314,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                 scanning = false
                 stateLabel.stringValue = "扫描失败：\(error.localizedDescription)"
                 statusItem.button?.title = " !"
-                writeStatus("failed", message: error.localizedDescription)
+                writeStatus(.failed, message: error.localizedDescription)
                 refreshControls()
             }
         }
@@ -336,7 +335,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             }
         }
         worker = work
-        writeStatus("copying")
+        writeStatus(.copying)
         refreshControls()
         Task { @MainActor in
             do {
@@ -347,14 +346,14 @@ final class AppController: NSObject, NSApplicationDelegate {
                     fileLabel.stringValue = ""
                     progressBar.doubleValue = 1
                     statusItem.button?.title = " ✓"
-                    writeStatus("completed", imported: result.imported, skipped: result.skipped)
+                    writeStatus(.completed, imported: result.imported, skipped: result.skipped)
                     notify("素材已导入", body: stateLabel.stringValue)
                 }
             } catch {
                 activeImport = nil
                 stateLabel.stringValue = "导入未完成：\(error.localizedDescription)"
                 statusItem.button?.title = " !"
-                writeStatus("failed", message: error.localizedDescription)
+                writeStatus(.failed, message: error.localizedDescription)
                 if !terminating { notify("导入需要处理", body: error.localizedDescription) }
             }
             worker = nil
@@ -364,12 +363,11 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     private func updateProgress(_ event: ImportProgress, importID: UUID) {
         guard activeImport == importID, worker != nil, !terminating else { return }
-        let labels: [ImportProgress.Phase: String] = [.copying: "复制", .verifying: "校验", .checking: "核对已有文件", .completed: "已完成文件"]
-        stateLabel.stringValue = "\(labels[event.phase] ?? "导入") · \(event.finishedFiles)/\(event.totalFiles)"
+        stateLabel.stringValue = "\(ImportPresentation.progressLabel(event.phase)) · \(event.finishedFiles)/\(event.totalFiles)"
         fileLabel.stringValue = event.fileName
         progressBar.doubleValue = event.fraction
         statusItem.button?.title = " \(Int(event.fraction * 100))%"
-        writeStatus(event.phase.rawValue, finished: event.finishedFiles, total: event.totalFiles)
+        writeStatus(Self.phase(for: event.phase), finished: event.finishedFiles, total: event.totalFiles)
     }
 
     @objc private func stopImport() { worker?.cancel() }
@@ -391,60 +389,43 @@ final class AppController: NSObject, NSApplicationDelegate {
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
     }
 
-    private func writeStatus(_ phase: String, imported: Int = 0, skipped: Int = 0, finished: Int = 0, total: Int = 0, message: String = "") {
+    private static func phase(for phase: ImportProgress.Phase) -> ImportPresentation.Phase {
+        switch phase {
+        case .copying: .copying
+        case .verifying: .verifying
+        case .checking: .checking
+        case .completed: .completed
+        }
+    }
+
+    private func writeStatus(_ phase: ImportPresentation.Phase, imported: Int = 0, skipped: Int = 0, finished: Int = 0, total: Int = 0, message: String = "") {
         displayPhase = phase
-        if phase == "completed" && activeImport == nil { lastImported = imported }
+        if phase == .completed && activeImport == nil { lastImported = imported }
         updatePresentation()
         statusRevision += 1
         let revision = statusRevision
-        let status = RuntimeStatus(phase: phase, imported: imported, skipped: skipped, finished: finished, total: total, message: message, updatedAt: ISO8601DateFormatter().string(from: Date()))
+        let status = RuntimeStatus(phase: phase.rawValue, imported: imported, skipped: skipped, finished: finished, total: total, message: message, updatedAt: ISO8601DateFormatter().string(from: Date()))
         Task { await RuntimeStore.shared.writeStatus(status, revision: revision) }
     }
 
     private func updatePresentation() {
         let configured = settings.volumeIdentifier != nil && settings.destinationPath != nil
         let busy = worker != nil
-        let headline: String
-        switch displayPhase {
-        case "scanning": headline = "查找视频"
-        case "copying": headline = "正在复制"
-        case "checking": headline = "核对素材"
-        case "verifying": headline = "正在校验"
-        case "failed": headline = "需要处理"
-        case "completed": headline = activeImport != nil ? "正在导入" : (lastImported > 0 ? "已收好" : "没有新视频")
-        case "ready": headline = scannedFiles > 0 ? "准备导入" : "没有新视频"
-        default: headline = configured ? "等待相机" : "准备导入"
-        }
-        panel.primaryButton.isEnabled = true
-        if !configured {
-            primaryAction = .configure
-            panel.primaryButton.title = "完成设置"
-            panel.primaryButton.symbolName = "arrow.right"
-        } else if busy {
-            primaryAction = .stop
-            panel.primaryButton.title = "停止导入"
-            panel.primaryButton.symbolName = "stop"
-        } else if scanning {
-            primaryAction = .start
-            panel.primaryButton.title = "查找视频…"
-            panel.primaryButton.symbolName = nil
-            panel.primaryButton.isEnabled = false
-        } else if displayPhase == "failed" {
-            primaryAction = .retry
-            panel.primaryButton.title = "重试导入"
-            panel.primaryButton.symbolName = "arrow.clockwise"
-            panel.primaryButton.isEnabled = configuredCamera != nil
-        } else if displayPhase == "ready" && scannedFiles > 0 {
-            primaryAction = .start
-            panel.primaryButton.title = "开始导入"
-            panel.primaryButton.symbolName = "arrow.down"
-            panel.primaryButton.isEnabled = configuredCamera != nil
-        } else {
-            primaryAction = .open
-            panel.primaryButton.title = "打开目录"
-            panel.primaryButton.symbolName = "arrow.up.right"
-        }
-        panel.present(title: headline, cameraName: configuredCamera?.name ?? settings.volumeName,
+        let presentation = ImportPresentation(ImportPresentation.State(
+            phase: displayPhase,
+            configured: configured,
+            busy: busy,
+            scanning: scanning,
+            importActive: activeImport != nil,
+            cameraConnected: configuredCamera != nil,
+            scannedFiles: scannedFiles,
+            lastImported: lastImported
+        ))
+        primaryAction = presentation.primaryAction
+        panel.primaryButton.title = presentation.primaryTitle
+        panel.primaryButton.symbolName = presentation.primarySymbol?.rawValue
+        panel.primaryButton.isEnabled = presentation.primaryEnabled
+        panel.present(title: presentation.headline, cameraName: configuredCamera?.name ?? settings.volumeName,
                       connected: configuredCamera != nil, destinationPath: settings.destinationPath,
                       busy: busy, scanning: scanning)
     }
