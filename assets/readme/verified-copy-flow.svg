@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="540" viewBox="0 0 1200 540" role="img" aria-labelledby="flowTitle flowDesc">
+  <title id="flowTitle">一次导入里的校验流程</title>
+  <desc id="flowDesc">四步流程：扫描来源只读 DCIM 并挑出 MP4；复制时写入 .partial 临时文件并同步计算 SHA-256；读回目标文件重新计算哈希并与复制时的结果比对；用 renamex_np 原子改名发布，成功后把校验和写进 .actionimport-manifest.json。任何一步失败，文件都不算完成。</desc>
+
+  <defs>
+    <pattern id="flowGrid" width="28" height="28" patternUnits="userSpaceOnUse">
+      <path d="M28 0H0V28" fill="none" stroke="#d8d1c3" stroke-width="1" opacity="0.42"/>
+    </pattern>
+    <clipPath id="flowClip"><rect width="1200" height="540" rx="28"/></clipPath>
+  </defs>
+
+  <g clip-path="url(#flowClip)">
+    <rect width="1200" height="540" fill="#f7f3ea"/>
+    <rect width="1200" height="540" fill="url(#flowGrid)"/>
+    <circle cx="1188" cy="46" r="150" fill="#f2c14e" opacity="0.20"/>
+
+    <g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif">
+      <text x="60" y="80" fill="#151515" font-size="40" font-weight="800" letter-spacing="-1">一次导入里的校验流程</text>
+      <text x="62" y="118" fill="#6b675e" font-size="20" font-weight="500">校验和一致才记为完成；再次接入时，未变化的文件凭清单记录快速跳过。</text>
+
+      <!-- 连接箭头 -->
+      <path d="M317 267H332M610 267H625M903 267H918" fill="none" stroke="#ff6a1e" stroke-width="4" stroke-linecap="round"/>
+      <path d="M332 259L342 267L332 275M625 259L635 267L625 275M918 259L928 267L918 275" fill="none" stroke="#ff6a1e" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+
+      <!-- 步骤 1 -->
+      <rect x="60" y="152" width="254" height="230" rx="18" fill="#fffdf7" stroke="#151515" stroke-width="2.4"/>
+      <circle cx="92" cy="186" r="17" fill="#151515"/>
+      <text x="92" y="192" fill="#f7f3ea" font-size="19" font-weight="700" text-anchor="middle">1</text>
+      <text x="120" y="194" fill="#151515" font-size="25" font-weight="700">扫描来源</text>
+      <path d="M82 214H292" fill="none" stroke="#d8d1c3" stroke-width="2"/>
+      <text x="82" y="252" fill="#3a3833" font-size="18">只读 DCIM，挑出 MP4</text>
+      <text x="82" y="282" fill="#3a3833" font-size="18">LRF 代理文件按设置决定</text>
+      <text x="82" y="312" fill="#3a3833" font-size="18">SCR / THM 预览一律跳过</text>
+      <text x="82" y="352" fill="#6b675e" font-size="18">符号链接直接拒绝</text>
+
+      <!-- 步骤 2 -->
+      <rect x="353" y="152" width="254" height="230" rx="18" fill="#fffdf7" stroke="#151515" stroke-width="2.4"/>
+      <circle cx="385" cy="186" r="17" fill="#151515"/>
+      <text x="385" y="192" fill="#f7f3ea" font-size="19" font-weight="700" text-anchor="middle">2</text>
+      <text x="413" y="194" fill="#151515" font-size="25" font-weight="700">复制时算哈希</text>
+      <path d="M375 214H585" fill="none" stroke="#d8d1c3" stroke-width="2"/>
+      <text x="375" y="252" fill="#3a3833" font-size="18">写入 .partial 临时文件</text>
+      <text x="375" y="282" fill="#3a3833" font-size="18">边复制边算 SHA-256</text>
+      <text x="375" y="312" fill="#3a3833" font-size="18">复制前先检查目标盘空间</text>
+      <text x="375" y="352" fill="#6b675e" font-size="18">归档目录不会出现半个文件</text>
+
+      <!-- 步骤 3 -->
+      <rect x="646" y="152" width="254" height="230" rx="18" fill="#fffdf7" stroke="#151515" stroke-width="2.4"/>
+      <circle cx="678" cy="186" r="17" fill="#151515"/>
+      <text x="678" y="192" fill="#f7f3ea" font-size="19" font-weight="700" text-anchor="middle">3</text>
+      <text x="706" y="194" fill="#151515" font-size="25" font-weight="700">读回校验</text>
+      <path d="M668 214H878" fill="none" stroke="#d8d1c3" stroke-width="2"/>
+      <text x="668" y="252" fill="#3a3833" font-size="18">读回目标文件再算哈希</text>
+      <text x="668" y="282" fill="#3a3833" font-size="18">与复制时的结果比对</text>
+      <text x="668" y="312" fill="#3a3833" font-size="18">再确认来源大小与修改时间</text>
+      <text x="668" y="352" fill="#ff6a1e" font-size="18" font-weight="600">不一致就不算完成</text>
+
+      <!-- 步骤 4 -->
+      <rect x="939" y="152" width="254" height="230" rx="18" fill="#fffdf7" stroke="#151515" stroke-width="2.4"/>
+      <circle cx="971" cy="186" r="17" fill="#151515"/>
+      <text x="971" y="192" fill="#f7f3ea" font-size="19" font-weight="700" text-anchor="middle">4</text>
+      <text x="999" y="194" fill="#151515" font-size="25" font-weight="700">改名发布</text>
+      <path d="M961 214H1171" fill="none" stroke="#d8d1c3" stroke-width="2"/>
+      <text x="961" y="252" fill="#3a3833" font-size="18">renamex_np 一次性改名</text>
+      <text x="961" y="282" fill="#3a3833" font-size="18">同名不同内容留两份</text>
+      <text x="961" y="312" fill="#3a3833" font-size="18">写入 manifest 记录校验和</text>
+      <text x="961" y="352" fill="#6b675e" font-size="18">已存在同名文件绝不覆盖</text>
+
+      <path d="M60 424H1140" fill="none" stroke="#151515" stroke-width="2.4"/>
+      <text x="60" y="466" fill="#151515" font-size="22" font-weight="700">任何一步失败，这个文件都不算完成；下次运行从头重做没完成的文件。</text>
+      <text x="60" y="500" fill="#6b675e" font-size="18">同一个保存目录同一时间只有一个导入任务，由 flock 独占锁保证。</text>
+    </g>
+  </g>
+</svg>
